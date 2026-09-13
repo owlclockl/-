@@ -42,7 +42,7 @@ static func get_number_in_range(range_text: String) -> float:
 	var text := range_text.strip_edges()
 	if text.is_valid_float():
 		var value := text.to_float()
-		var whole := floor(value)
+		var whole := floorf(value)
 		var fraction := value - whole
 		if fraction > 0.0 and FmgRandom.next() < fraction:
 			return whole + 1.0
@@ -256,7 +256,7 @@ static func get_colors(count: int) -> Array:
 		if i < C_12.size():
 			colors.append(Color.html(C_12[i]))
 		else:
-			var t := float(i - C_12.size()) / max(1.0, float(count - C_12.size()))
+			var t := float(i - C_12.size()) / maxf(1.0, float(count - C_12.size()))
 			colors.append(Color.from_hsv(fmod(t * 0.85 + 0.05, 1.0), 0.55, 0.9))
 	# Fisher-Yates shuffle with the seeded RNG (d3.shuffler equivalent)
 	for i in range(colors.size() - 1, 0, -1):

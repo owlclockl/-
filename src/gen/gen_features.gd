@@ -273,7 +273,7 @@ static func _find_on_border_cell(first_cell: int, feature_ids: PackedInt32Array,
 ## Decide which feature is a continent, which is an island and so on (FMG defineGroups)
 static func define_groups(map: MapData) -> void:
 	var features: Array = map.pack["features"]
-	var grid_cells_number := map.grid["cells"]["h"].size()
+	var grid_cells_number: int = map.grid["cells"]["h"].size()
 	var ocean_min_size := grid_cells_number / 25.0
 	var sea_min_size := grid_cells_number / 1000.0
 	var continent_min_size := grid_cells_number / 10.0
