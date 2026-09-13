@@ -1,0 +1,15 @@
+# gdtoolkit linter configuration (gdlint reads this file).
+# The map generator is a direct port of Fantasy Map Generator: long, data-heavy functions are
+# expected, so a few style limits are relaxed while the useful checks stay enabled.
+disable:
+  - unused-argument
+  - too-many-arguments
+  - max-public-methods
+  - max-returns
+  - expression-not-assigned
+  - class-definitions-order
+max-line-length: 420
+max-file-lines: 1200
+function-arguments-number: 14
+max-local-variables: 40
+max-returns: 12

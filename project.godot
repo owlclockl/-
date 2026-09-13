@@ -1,7 +1,7 @@
 [application]
 config/name="Цивилизация мудрецов"
 run/main_scene="res://main.tscn"
-config/features=PackedStringArray("4.2")
+config/features=PackedStringArray("4.7")
 
 [display]
 window/size/viewport_width=1280
@@ -17,3 +17,4 @@ environment/defaults/default_clear_color=Color(0.035, 0.047, 0.075, 1)
 
 [input]
 end_turn={"deadzone": 0.5, "events": [Object(InputEventKey,"physical_keycode":32)]}
+open_world_map={"deadzone": 0.5, "events": [Object(InputEventKey,"physical_keycode":77)]}

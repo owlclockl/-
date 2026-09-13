@@ -1,0 +1,12 @@
+[gd_scene load_steps=2 format=3 uid="uid://bwm1worldmap"]
+
+[ext_resource type="Script" path="res://src/view/world_map.gd" id="1_world_map"]
+
+[node name="WorldMap" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_world_map")

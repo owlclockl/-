@@ -177,6 +177,7 @@ func _draw_bottom_bar() -> void:
 	for i in min(3, log_lines.size()):
 		_draw_text(Vector2(76, 659 + i * 17), "•  " + log_lines[i], 12, palette.muted if i > 0 else palette.text)
 	_button(Rect2(1000, 638, 198, 52), "ЗАВЕРШИТЬ ХОД  [ПРОБЕЛ]", palette.gold, true)
+	_button(Rect2(760, 638, 220, 52), "КАРТА МИРА  [M]", palette.text, false)
 
 func _draw_toast() -> void:
 	var rect := Rect2(390, 92, 360, 40)
@@ -189,6 +190,9 @@ func _draw_text(pos: Vector2, text: String, size: int, color: Color) -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_SPACE:
 		_end_turn(); get_viewport().set_input_as_handled()
+	if event is InputEventKey and event.pressed and event.keycode == KEY_M:
+		get_tree().change_scene_to_file("res://src/view/world_map.tscn")
+		get_viewport().set_input_as_handled()
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		var mouse := event.position
 		for y in ROWS:
@@ -198,6 +202,7 @@ func _input(event: InputEvent) -> void:
 					_select_cell(cell); return
 			if Rect2(1000, 638, 198, 52).has_point(mouse): _end_turn()
 			if Rect2(820, 438, 174, 42).has_point(mouse): _build()
+			if Rect2(760, 638, 220, 52).has_point(mouse): get_tree().change_scene_to_file("res://src/view/world_map.tscn")
 
 func _select_cell(cell: Vector2i) -> void:
 	selected = cell
@@ -211,11 +216,15 @@ func _select_cell(cell: Vector2i) -> void:
 func _end_turn() -> void:
 	turn += 1; wisdom += 12; food += 8; crystals += 1
 	log_lines.push_front("Ход %02d: мудрость течёт по землям" % turn)
-	if log_lines.size() > 3: log_lines.pop_back()
+	if log_lines.size() > 3:
+		log_lines.pop_back()
 	event_text = "Ход %d завершён · Совет получил новые знания" % turn
 	event_timer = 3.0; queue_redraw()
 
 func _build() -> void:
 	if wisdom >= 30:
-		wisdom -= 30; log_lines.push_front("Построено новое святилище"); if log_lines.size() > 3: log_lines.pop_back()
+		wisdom -= 30
+		log_lines.push_front("Построено новое святилище")
+		if log_lines.size() > 3:
+			log_lines.pop_back()
 		event_text = "Святилище возведено! +12 мудрости каждый ход"; event_timer = 3.0; queue_redraw()
