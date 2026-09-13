@@ -126,7 +126,7 @@ func _tile_color(kind: String) -> Color:
 	return Color("#182b3a")
 
 func _draw_tile_icon(center: Vector2, kind: String) -> void:
-	var c := palette.muted
+	var c: Color = palette.muted
 	match kind:
 		"water":
 			c = palette.cyan; draw_arc(center, 12, 0.2, 2.9, 12, c, 2); draw_arc(center + Vector2(0, 7), 10, 0.2, 2.9, 12, c, 2)
@@ -194,7 +194,7 @@ func _input(event: InputEvent) -> void:
 		get_tree().change_scene_to_file("res://src/view/world_map.tscn")
 		get_viewport().set_input_as_handled()
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		var mouse := event.position
+		var mouse: Vector2 = event.position
 		for y in ROWS:
 			for x in COLS:
 				var cell := Vector2i(x, y)

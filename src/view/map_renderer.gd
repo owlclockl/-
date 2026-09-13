@@ -215,7 +215,7 @@ func _draw() -> void:
 	if show_burgs:
 		var font := ThemeDB.fallback_font
 		for burg in _burgs:
-			var point := transform * burg["point"]
+			var point: Vector2 = transform * burg["point"]
 			var radius := 3.0 if burg["capital"] else 2.0
 			draw_circle(point, radius, BURG_COLOR)
 			if burg["capital"]:
@@ -227,7 +227,7 @@ func _draw() -> void:
 	if show_labels:
 		var font := ThemeDB.fallback_font
 		for label in _labels:
-			var point := transform * label["point"]
+			var point: Vector2 = transform * label["point"]
 			var text: String = label["text"]
 			var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, label["size"]).x
 			draw_string(font, point - Vector2(width / 2.0, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, label["size"], LABEL_COLOR)

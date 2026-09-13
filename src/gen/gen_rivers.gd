@@ -133,7 +133,7 @@ func _downhill_cell(cell_id: int, lake_out_cells: PackedInt32Array, haven: Packe
 		return best
 	if haven[cell_id] != 0:
 		return haven[cell_id]
-	var best_neighbour := neighbours[cell_id][0]
+	var best_neighbour: int = neighbours[cell_id][0]
 	for neighbour in neighbours[cell_id]:
 		if heights[neighbour] < heights[best_neighbour]:
 			best_neighbour = neighbour

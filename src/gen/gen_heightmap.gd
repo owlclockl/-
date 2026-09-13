@@ -278,7 +278,7 @@ func add_trough(count: String, height: String, range_x: String, range_y: String,
 
 
 func add_strait(width_text: String, direction := "vertical") -> void:
-	var desired_width := min(FmgUtils.get_number_in_range(width_text), float(map.grid["cellsX"]) / 3.0)
+	var desired_width := minf(FmgUtils.get_number_in_range(width_text), float(map.grid["cellsX"]) / 3.0)
 	if desired_width < 1.0 and FmgRandom.p(desired_width):
 		return
 	var used := PackedByteArray()
@@ -325,7 +325,7 @@ func add_strait(width_text: String, direction := "vertical") -> void:
 		range_cells.append(current)
 
 	var query := PackedInt32Array()
-	var step := 0.1 / max(desired_width, 0.1)
+	var step := 0.1 / maxf(desired_width, 0.1)
 	var width_index := 0.0
 	while width_index < desired_width:
 		var remaining := desired_width - width_index
