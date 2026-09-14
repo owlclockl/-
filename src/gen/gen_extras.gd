@@ -152,13 +152,13 @@ static func generate_goods(map: MapData) -> void:
 
 ## Forms of government: they depend on the state's culture and expansionism (FMG defineStateForms)
 static func define_state_forms(map: MapData) -> void:
-	var forms := ["Monarchy", "Republic", "Theocracy", "Union", "Federation", "Khanate", "Tribe"]
-	for state in map.pack.get("states", []):
+	var forms: PackedStringArray = ["Monarchy", "Republic", "Theocracy", "Union", "Federation", "Khanate", "Tribe"]
+	for state: Dictionary in map.pack.get("states", []):
 		var state_id := int(state.get("i", 0))
 		if state_id == 0:
 			continue
 		var type := str(state.get("type", "Generic"))
-		var form := forms[FmgRandom.rand_i(0, forms.size() - 1)]
+		var form: String = forms[FmgRandom.rand_i(0, forms.size() - 1)]
 		if type == "Nomadic":
 			form = "Tribe"
 		elif type == "Naval":

@@ -1,58 +1,61 @@
-## Draws a generated map: biomes or states, rivers, coastlines, burgs and labels.
-## Keeps the heavy geometry in cached arrays so redrawing after a pan or a zoom stays cheap.
+## Draws a generated map. The fills come from the atlas (one blitted texture per view layer),
+## the crisp details — coastline, rivers, borders, towns, labels — are still drawn as vectors so
+## they stay sharp at any zoom. Heavy geometry is kept in cached arrays, so a pan or a zoom costs a
+## single quad plus a few hundred polylines instead of ~10000 polygons.
 class_name MapRenderer
 extends Control
 
-# view layers (plain ints so they can be passed around without enum casts)
-const VIEW_BIOMES := 0
-const VIEW_STATES := 1
-const VIEW_RELIGIONS := 2
-const VIEW_ZONES := 3
+# view layers, kept in sync with MapAtlas
+const VIEW_BIOMES := MapAtlas.VIEW_BIOMES
+const VIEW_STATES := MapAtlas.VIEW_STATES
+const VIEW_RELIGIONS := MapAtlas.VIEW_RELIGIONS
+const VIEW_ZONES := MapAtlas.VIEW_ZONES
+const VIEW_HEIGHTS := MapAtlas.VIEW_HEIGHTS
+const VIEWS: Array = [VIEW_BIOMES, VIEW_STATES, VIEW_RELIGIONS, VIEW_ZONES, VIEW_HEIGHTS]
 
-const WATER_COLOR := Color("#466eab")
-const DEEP_WATER_COLOR := Color("#33598f")
-const RIVER_COLOR := Color("#4a7fb5")
+const RIVER_COLOR := Color("#3f6fa4")
 const COAST_COLOR := Color("#4b4b3f")
 const BORDER_COLOR := Color("#332f2b")
 const LABEL_COLOR := Color("#1b1b1b")
 const BURG_COLOR := Color("#3b2c24")
+const CAPITAL_COLOR := Color("#f6e27a")
+const BACKDROP_COLOR := Color("#22406b")
+const HOVER_COLOR := Color("#fff9d6")
 
+const ZOOM_MIN := 0.4
+const ZOOM_MAX := 14.0
+
+signal cell_hovered(cell_id: int)
+
+var atlas := MapAtlas.new()
 var map: MapData
 var view := VIEW_BIOMES
 var show_rivers := true
+var show_coast := true
+var show_borders := true
 var show_burgs := true
 var show_labels := true
 
-var _cell_polygons: Array = [] # PackedVector2Array per pack cell
-var _cell_colors: Array = [] # Color per pack cell (biomes)
-var _cell_state_colors: Array = [] # Color per pack cell (politics)
-var _cell_religion_colors: Array = []
-var _cell_zone_colors: Array = []
 var _river_paths: Array = [] # {points, width}
 var _coast_edges: Array = [] # PackedVector2Array of two points
 var _state_edges: Array = []
-var _burgs: Array = [] # {point, capital, name}
+var _burgs: Array = [] # {point, capital, name, population}
 var _labels: Array = [] # {point, text, size}
 
 var _pan := Vector2.ZERO
 var _zoom := 1.0
 var _dragging := false
 var _drag_start := Vector2.ZERO
+var _hovered := -1
 
 
-## Prepare the caches from a generated map
-func _ready() -> void:
-	mouse_filter = Control.MOUSE_FILTER_STOP
-	clip_contents = true
-
-
+## Prepare the caches from a generated map. The atlas is baked separately, see `bake`.
 func setup(map_data: MapData) -> void:
 	map = map_data
-	_cell_polygons.clear()
-	_cell_colors.clear()
-	_cell_state_colors.clear()
-	_cell_religion_colors.clear()
-	_cell_zone_colors.clear()
+	_pan = Vector2.ZERO
+	_zoom = 1.0
+	_hovered = -1
+	atlas.setup(map_data)
 	_river_paths.clear()
 	_coast_edges.clear()
 	_state_edges.clear()
@@ -61,97 +64,64 @@ func setup(map_data: MapData) -> void:
 	if map == null or map.pack.is_empty():
 		queue_redraw()
 		return
-
-	var cells: Dictionary = map.pack["cells"]
-	var vertices: PackedVector2Array = map.pack["vertices"]["p"]
-	var cell_vertices: Array = cells["v"]
-	var neighbours: Array = cells["c"]
-	var heights: PackedInt32Array = cells["h"]
-	var biomes: PackedInt32Array = cells["biome"]
-	var states: PackedInt32Array = cells["state"]
-	var religions: PackedInt32Array = cells["religion"]
-	var state_list: Array = map.pack.get("states", [])
-	var religion_list: Array = map.pack.get("religions", [])
-
-	for cell_id in cells["p"].size():
-		var polygon := PackedVector2Array()
-		for vertex in cell_vertices[cell_id]:
-			if vertex >= 0 and vertex < vertices.size():
-				polygon.append(vertices[vertex])
-		_cell_polygons.append(polygon)
-		var color := DEEP_WATER_COLOR
-		if heights[cell_id] >= MapData.SEA_LEVEL:
-			var biome_id: int = biomes[cell_id]
-			color = Color("#c8d68f")
-			if biome_id >= 0 and biome_id < map.biomes.size():
-				color = FmgUtils.color_from_any(map.biomes[biome_id].get("color", "#c8d68f"))
-		elif cells["t"][cell_id] == -1:
-			color = WATER_COLOR
-		_cell_colors.append(color)
-
-		var state_color := color
-		var state_id: int = states[cell_id] if cell_id < states.size() else 0
-		if state_id > 0 and state_id < state_list.size():
-			state_color = _mix(color, FmgUtils.color_from_any(state_list[state_id].get("color", "#ffffff")), 0.55)
-		_cell_state_colors.append(state_color)
-
-		var religion_color := color
-		var religion_id: int = religions[cell_id] if cell_id < religions.size() else 0
-		if religion_id > 0 and religion_id < religion_list.size():
-			religion_color = _mix(color, _religion_color(religion_id), 0.55)
-		_cell_religion_colors.append(religion_color)
-		_cell_zone_colors.append(_zone_color(map, cell_id))
-
-	# shared edges: coastline when land meets water, state border when states differ
-	for cell_id in cells["p"].size():
-		for neighbour in neighbours[cell_id]:
-			if neighbour <= cell_id:
-				continue
-			var edge := _shared_edge(cell_vertices, vertices, cell_id, neighbour)
-			if edge.size() == 0:
-				continue
-			var land_a := heights[cell_id] >= MapData.SEA_LEVEL
-			var land_b := heights[neighbour] >= MapData.SEA_LEVEL
-			if land_a != land_b:
-				_coast_edges.append(edge)
-			elif land_a and land_b and cell_id < states.size() and neighbour < states.size() and states[cell_id] != states[neighbour]:
-				if states[cell_id] != 0 and states[neighbour] != 0:
-					_state_edges.append(edge)
-
-	# rivers
-	for river in map.pack.get("rivers", []):
-		var river_cells: PackedInt32Array = river.get("cells", PackedInt32Array())
-		if river_cells.size() < 2:
-			continue
-		var points := PackedVector2Array()
-		for cell in river_cells:
-			if cell >= 0 and cell < cells["p"].size():
-				points.append(cells["p"][cell])
-		_river_paths.append({"points": points, "width": maxf(float(river.get("width", 0.5)), 0.4)})
-
-	# burgs and labels
-	for burg in map.pack.get("burgs", []):
-		if int(burg.get("i", 0)) == 0 or burg.get("removed", false):
-			continue
-		var cell_id := int(burg.get("cell", 0))
-		if cell_id < 0 or cell_id >= cells["p"].size():
-			continue
-		_burgs.append({
-			"point": cells["p"][cell_id],
-			"capital": bool(burg.get("capital", false)),
-			"name": str(burg.get("name", "")),
-		})
-
-	for state in map.pack.get("states", []):
-		var state_id := int(state.get("i", 0))
-		if state_id == 0:
-			continue
-		var center := int(state.get("center", 0))
-		if center < 0 or center >= cells["p"].size():
-			continue
-		_labels.append({"point": cells["p"][center], "text": str(state.get("name", "")), "size": 13})
-
+	_build_edges()
+	_build_rivers()
+	_build_burgs()
 	queue_redraw()
+
+
+func _ready() -> void:
+	mouse_filter = Control.MOUSE_FILTER_STOP
+	clip_contents = true
+	mouse_exited.connect(func() -> void: _update_hover(Vector2(-1000.0, -1000.0)))
+
+
+# ------------------------------------------------------------------ atlas
+
+
+## Is the atlas of the current layer ready to be drawn?
+func is_ready() -> bool:
+	return atlas.is_baked(view)
+
+
+func needs_bake() -> bool:
+	return atlas.needs_geometry() or not atlas.is_baked(view)
+
+
+## One slice of the geometry pass; returns true while there is more to do
+func bake_geometry_step() -> bool:
+	if atlas.needs_geometry():
+		atlas.begin_bake()
+	atlas.bake_step()
+	return atlas.is_baking()
+
+
+func bake_progress() -> float:
+	return atlas.bake_progress()
+
+
+## Fill the band of a layer (cheap once the geometry is baked)
+func bake(layer: int) -> void:
+	if atlas.needs_geometry():
+		atlas.bake_geometry()
+	atlas.bake_layer(layer)
+	set_view(layer)
+
+
+func set_level(value: float) -> bool:
+	return atlas.set_level(value)
+
+
+func level() -> float:
+	return atlas.level
+
+
+func max_level() -> float:
+	return atlas.max_level()
+
+
+func atlas_pixels_text() -> String:
+	return atlas.pixels_text()
 
 
 func set_view(new_view: int) -> void:
@@ -159,90 +129,190 @@ func set_view(new_view: int) -> void:
 	queue_redraw()
 
 
-func _mix(a: Color, b: Color, t: float) -> Color:
-	return Color(
-		lerpf(a.r, b.r, t), lerpf(a.g, b.g, t), lerpf(a.b, b.b, t), 1.0
-	)
+func view_title(new_view: int) -> String:
+	var index: int = VIEWS.find(new_view)
+	if index < 0 or index >= MapAtlas.LABELS.size():
+		return "Слой"
+	return str(MapAtlas.LABELS[index])
 
 
-func _religion_color(religion_id: int) -> Color:
-	var hue := fmod(float(religion_id) * 0.37, 1.0)
-	return Color.from_hsv(hue, 0.45, 0.85)
+# ------------------------------------------------------------------ vector caches
 
 
-func _zone_color(map: MapData, cell_id: int) -> Color:
-	var zones: Array = map.pack.get("zones", [])
-	if zones.is_empty():
-		return Color.WHITE
-	var zone_index := cell_id % zones.size()
-	return FmgUtils.color_from_any(zones[zone_index].get("color", "#ffffff"))
+## Coastline and state borders, from the edges cells share
+func _build_edges() -> void:
+	var cells: Dictionary = map.pack["cells"]
+	var vertices: PackedVector2Array = map.pack["vertices"]["p"]
+	var cell_vertices: Array = cells["v"]
+	var neighbours: Array = cells["c"]
+	var heights: PackedInt32Array = cells["h"]
+	var states: PackedInt32Array = cells["state"]
+	var points: PackedVector2Array = cells["p"]
+	for cell_id in points.size():
+		var ring: PackedInt32Array = neighbours[cell_id]
+		for neighbour in ring:
+			var neighbour_id := int(neighbour)
+			if neighbour_id <= cell_id:
+				continue
+			var edge := _shared_edge(cell_vertices, vertices, cell_id, neighbour_id)
+			if edge.size() == 0:
+				continue
+			var land_a := heights[cell_id] >= MapData.SEA_LEVEL
+			var land_b := heights[neighbour_id] >= MapData.SEA_LEVEL
+			if land_a != land_b:
+				_coast_edges.append(edge)
+			elif land_a and land_b and cell_id < states.size() and neighbour_id < states.size():
+				if states[cell_id] != 0 and states[neighbour_id] != 0 and states[cell_id] != states[neighbour_id]:
+					_state_edges.append(edge)
+
+
+func _build_rivers() -> void:
+	var cells: Dictionary = map.pack["cells"]
+	var points: PackedVector2Array = cells["p"]
+	for river: Dictionary in map.rivers():
+		if int(river.get("i", 0)) == 0:
+			continue
+		var river_cells: PackedInt32Array = river.get("cells", PackedInt32Array())
+		if river_cells.size() < 2:
+			continue
+		var path := PackedVector2Array()
+		for cell in river_cells:
+			var cell_id := int(cell)
+			if cell_id >= 0 and cell_id < points.size():
+				path.append(points[cell_id])
+		if path.size() >= 2:
+			var width := maxf(float(river.get("width", 0.5)), 0.4)
+			_river_paths.append({"points": path, "width": width})
+
+
+func _build_burgs() -> void:
+	var cells: Dictionary = map.pack["cells"]
+	var points: PackedVector2Array = cells["p"]
+	for burg: Dictionary in map.burgs():
+		if int(burg.get("i", 0)) == 0 or bool(burg.get("removed", false)):
+			continue
+		var cell_id := int(burg.get("cell", 0))
+		if cell_id < 0 or cell_id >= points.size():
+			continue
+		_burgs.append({
+			"point": points[cell_id],
+			"capital": int(burg.get("capital", 0)) > 0,
+			"name": str(burg.get("name", "")),
+			"population": float(burg.get("population", 0.0)),
+		})
+	for state: Dictionary in map.states():
+		var state_id := int(state.get("i", 0))
+		if state_id == 0:
+			continue
+		var center := int(state.get("center", 0))
+		if center < 0 or center >= points.size():
+			continue
+		_labels.append({"point": points[center], "text": str(state.get("name", "")), "size": 13})
 
 
 ## The edge both cells share (two Voronoi vertices, in the order of the first cell)
 func _shared_edge(cell_vertices: Array, points: PackedVector2Array, a: int, b: int) -> PackedVector2Array:
+	var ids_a: PackedInt32Array = cell_vertices[a]
+	var ids_b: PackedInt32Array = cell_vertices[b]
 	var shared := PackedInt32Array()
-	for vertex in cell_vertices[a]:
-		if (cell_vertices[b] as PackedInt32Array).has(vertex):
+	for vertex in ids_a:
+		if ids_b.has(vertex):
 			shared.append(vertex)
 	if shared.size() < 2:
 		return PackedVector2Array()
 	return PackedVector2Array([points[shared[0]], points[shared[1]]])
 
 
+## Cheap culling test for a segment against the visible rectangle of the control
+func _in_view(a: Vector2, b: Vector2, bounds: Rect2) -> bool:
+	var margin := 8.0
+	if maxf(a.x, b.x) < bounds.position.x - margin or minf(a.x, b.x) > bounds.end.x + margin:
+		return false
+	if maxf(a.y, b.y) < bounds.position.y - margin or minf(a.y, b.y) > bounds.end.y + margin:
+		return false
+	return true
+
+
 # ------------------------------------------------------------------ drawing
 
+
 func _draw() -> void:
-	if map == null or _cell_polygons.is_empty():
+	if map == null:
 		return
 	var transform := _map_transform()
-	for cell_id in _cell_polygons.size():
-		var polygon := _transform_polygon(_cell_polygons[cell_id], transform)
-		if polygon.size() < 3:
-			continue
-		draw_colored_polygon(polygon, _color_of(cell_id))
+	var scale := transform.get_scale()
+	var map_rect := Rect2(transform * Vector2.ZERO, Vector2(map.width() * scale.x, map.height() * scale.y))
+	draw_rect(map_rect, BACKDROP_COLOR)
+	if atlas.texture != null and atlas.is_baked(view):
+		draw_texture_rect_region(atlas.texture, map_rect, atlas.region_of(view))
+	_draw_details(transform)
 
+
+func _draw_details(transform: Transform2D) -> void:
+	var scale := transform.get_scale().x
+	var bounds := get_rect()
+	if show_coast:
+		for edge: PackedVector2Array in _coast_edges:
+			var a := transform * edge[0]
+			var b := transform * edge[1]
+			if _in_view(a, b, bounds):
+				draw_line(a, b, COAST_COLOR, 1.6, true)
+	if show_borders:
+		for edge: PackedVector2Array in _state_edges:
+			var left := transform * edge[0]
+			var right := transform * edge[1]
+			if _in_view(left, right, bounds):
+				draw_line(left, right, BORDER_COLOR, 1.2, true)
 	if show_rivers:
-		for river in _river_paths:
-			var points := _transform_polygon(river["points"], transform)
+		for river: Dictionary in _river_paths:
+			var source: PackedVector2Array = river["points"]
+			var width: float = river["width"]
+			var points := _transform_polygon(source, transform)
 			if points.size() >= 2:
-				draw_polyline(points, RIVER_COLOR, maxf(float(river["width"]) * transform.z, 1.0), true)
+				draw_polyline(points, RIVER_COLOR, maxf(width * scale, 1.0), true)
 
-	for edge in _coast_edges:
-		draw_line(transform * edge[0], transform * edge[1], COAST_COLOR, 1.6, true)
-	for edge in _state_edges:
-		draw_line(transform * edge[0], transform * edge[1], BORDER_COLOR, 1.2, true)
+	if _hovered >= 0 and atlas.is_ready():
+		var highlighted := _transform_polygon(map.pack_polygon(_hovered), transform)
+		if highlighted.size() >= 3:
+			highlighted.append(highlighted[0])
+			draw_polyline(highlighted, HOVER_COLOR, 2.0, true)
 
+	if not show_burgs and not show_labels:
+		return
+	var font := ThemeDB.fallback_font
 	if show_burgs:
-		var font := ThemeDB.fallback_font
-		for burg in _burgs:
-			var point: Vector2 = transform * burg["point"]
-			var radius := 3.0 if burg["capital"] else 2.0
+		for burg: Dictionary in _burgs:
+			var capital: bool = burg["capital"]
+			var point := transform * (burg["point"] as Vector2)
+			var radius := 3.0 if capital else 2.0
+			if capital:
+				draw_circle(point, radius + 1.5, CAPITAL_COLOR)
 			draw_circle(point, radius, BURG_COLOR)
-			if burg["capital"]:
-				draw_circle(point, radius + 1.5, Color("#f6e27a"))
-				draw_circle(point, radius, BURG_COLOR)
-			if show_labels and burg["capital"]:
-				draw_string(font, point + Vector2(6, 4), burg["name"], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LABEL_COLOR)
-
+			if capital and show_labels:
+				_draw_text(font, point + Vector2(6, 4), str(burg["name"]), 10, HORIZONTAL_ALIGNMENT_LEFT)
 	if show_labels:
-		var font := ThemeDB.fallback_font
-		for label in _labels:
-			var point: Vector2 = transform * label["point"]
-			var text: String = label["text"]
-			var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, label["size"]).x
-			draw_string(font, point - Vector2(width / 2.0, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, label["size"], LABEL_COLOR)
+		for label: Dictionary in _labels:
+			var center := transform * (label["point"] as Vector2)
+			_draw_text(font, center, str(label["text"]), int(label["size"]), HORIZONTAL_ALIGNMENT_CENTER)
 
 
-func _color_of(cell_id: int) -> Color:
-	match view:
-		VIEW_STATES:
-			return _cell_state_colors[cell_id]
-		VIEW_RELIGIONS:
-			return _cell_religion_colors[cell_id]
-		VIEW_ZONES:
-			return _cell_zone_colors[cell_id]
-		_:
-			return _cell_colors[cell_id]
+func _draw_text(font: Font, center: Vector2, text: String, size: int, alignment: int) -> void:
+	if text.is_empty():
+		return
+	var width := font.get_string_size(text, alignment, -1, size).x
+	var start := center
+	if alignment == HORIZONTAL_ALIGNMENT_CENTER:
+		start = center - Vector2(width / 2.0, 0.0)
+	draw_string_outline(font, start, text, alignment, -1, size, 3, Color(0.0, 0.0, 0.0, 0.28))
+	draw_string(font, start, text, alignment, -1, size, LABEL_COLOR)
+
+
+func _transform_polygon(points: PackedVector2Array, transform: Transform2D) -> PackedVector2Array:
+	var result := PackedVector2Array()
+	result.resize(points.size())
+	for index in points.size():
+		result[index] = transform * points[index]
+	return result
 
 
 func _map_transform() -> Transform2D:
@@ -251,44 +321,72 @@ func _map_transform() -> Transform2D:
 	if map_size.x <= 0.0 or map_size.y <= 0.0:
 		return Transform2D.IDENTITY
 	var fit := minf(view_size.x / map_size.x, view_size.y / map_size.y)
-	var scale := fit * _zoom
+	var scale := clampf(fit * _zoom, 0.01, 400.0)
 	var offset := (view_size - map_size * scale) / 2.0 + _pan
 	return Transform2D(0.0, Vector2(scale, scale), 0.0, offset)
 
 
-func _transform_polygon(points: PackedVector2Array, transform: Transform2D) -> PackedVector2Array:
-	var result := PackedVector2Array()
-	result.resize(points.size())
-	for i in points.size():
-		result[i] = transform * points[i]
-	return result
-
-
 # ------------------------------------------------------------------ interaction
+
+
+## The pack cell drawn under a control-local point (-1 when there is none)
+func cell_at(position: Vector2) -> int:
+	if map == null:
+		return -1
+	return atlas.cell_at(_map_transform().affine_inverse() * position)
+
+
+func zoom_value() -> float:
+	return _zoom
+
+
+func zoom_by(factor: float) -> void:
+	_zoom = clampf(_zoom * factor, ZOOM_MIN, ZOOM_MAX)
+	queue_redraw()
+
+
+func reset_view() -> void:
+	_pan = Vector2.ZERO
+	_zoom = 1.0
+	queue_redraw()
+
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_zoom_at(event.position, 1.15)
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_zoom_at(event.position, 1.0 / 1.15)
-		elif event.button_index == MOUSE_BUTTON_LEFT:
-			_dragging = event.pressed
-			_drag_start = event.position
-		elif event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-			_pan = Vector2.ZERO
-			_zoom = 1.0
+		var button := event as InputEventMouseButton
+		if button.button_index == MOUSE_BUTTON_WHEEL_UP:
+			_zoom_at(button.position, 1.15)
+		elif button.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_zoom_at(button.position, 1.0 / 1.15)
+		elif button.button_index == MOUSE_BUTTON_LEFT:
+			_dragging = button.pressed
+			_drag_start = button.position
+		elif button.button_index == MOUSE_BUTTON_RIGHT and button.pressed:
+			reset_view()
+		_update_hover(button.position)
+		accept_event()
+	elif event is InputEventMouseMotion:
+		var motion := event as InputEventMouseMotion
+		if _dragging:
+			_pan += motion.position - _drag_start
+			_drag_start = motion.position
 			queue_redraw()
-	elif event is InputEventMouseMotion and _dragging:
-		_pan += event.position - _drag_start
-		_drag_start = event.position
-		queue_redraw()
+		_update_hover(motion.position)
+
+
+func _update_hover(position: Vector2) -> void:
+	var cell_id := cell_at(position)
+	if cell_id == _hovered:
+		return
+	_hovered = cell_id
+	cell_hovered.emit(cell_id)
+	queue_redraw()
 
 
 func _zoom_at(position: Vector2, factor: float) -> void:
 	var transform := _map_transform()
 	var map_point := transform.affine_inverse() * position
-	_zoom *= factor
+	_zoom = clampf(_zoom * factor, ZOOM_MIN, ZOOM_MAX)
 	var new_transform := _map_transform()
 	_pan += position - new_transform * map_point
 	queue_redraw()

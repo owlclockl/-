@@ -95,6 +95,10 @@ func _initialize() -> void:
 		names_b.append(str(burg.get("name", "")))
 	check(names_a == names_b, "names are deterministic")
 
+	# ---------------------------------------------------------------- the map atlas
+	_check_atlas(map)
+	_check_renderer(map)
+
 	var elapsed := Time.get_ticks_msec() - start
 	print("checked %d invariants in %d ms" % [checks, elapsed])
 	if failures == 0:
@@ -142,3 +146,102 @@ func _same_points(a: PackedVector2Array, b: PackedVector2Array) -> bool:
 		if not a[i].is_equal_approx(b[i]):
 			return false
 	return true
+
+
+## The atlas is pure CPU work, so it can be checked without a renderer: geometry, colors,
+## picking, determinism and the PNG export.
+func _check_atlas(map: MapData) -> void:
+	print("atlas:")
+	var atlas := MapAtlas.new()
+	atlas.level = 1.0
+	atlas.setup(map)
+	check(atlas.width == int(map.width()) and atlas.band_height == int(map.height()),
+		"the atlas covers the whole map (%d×%d per layer)" % [atlas.width, atlas.band_height])
+	check(is_equal_approx(atlas.level, 1.0), "the requested level is kept (1×)")
+
+	atlas.bake(MapAtlas.VIEW_BIOMES)
+	check(atlas.texture != null, "the atlas builds a texture")
+	check(atlas.is_baked(MapAtlas.VIEW_BIOMES), "the requested layer is baked")
+	check(atlas.layer_count_baked() == 1, "only the requested layer is baked (%d)" % atlas.layer_count_baked())
+	var zone_region := atlas.region_of(MapAtlas.VIEW_ZONES)
+	check(zone_region == Rect2(0.0, float(3 * atlas.band_height), float(atlas.width), float(atlas.band_height)),
+		"every layer takes one band of the atlas")
+
+	var cells: Dictionary = map.pack["cells"]
+	var points: PackedVector2Array = cells["p"]
+	var heights: PackedInt32Array = cells["h"]
+	var states: PackedInt32Array = cells["state"]
+
+	# picking: the site of a cell lies inside the polygon that was rasterized for it
+	var step := maxi(1, int(float(points.size()) / 400.0))
+	var sampled := 0
+	var matched := 0
+	for index in range(0, points.size(), step):
+		sampled += 1
+		if atlas.cell_at(points[index]) == index:
+			matched += 1
+	check(sampled > 20 and float(matched) > float(sampled) * 0.97,
+		"the mask picks the cell under a point (%d/%d)" % [matched, sampled])
+	check(atlas.cell_at(Vector2(-64.0, -64.0)) == -1, "points outside the map pick nothing")
+
+	var land_cell := -1
+	var sea_cell := -1
+	var state_cell := -1
+	for index in heights.size():
+		if heights[index] >= MapData.SEA_LEVEL and land_cell < 0:
+			land_cell = index
+		if heights[index] < 10 and sea_cell < 0:
+			sea_cell = index
+		if state_cell < 0 and index < states.size() and states[index] > 0 and heights[index] >= MapData.SEA_LEVEL:
+			state_cell = index
+	check(land_cell >= 0 and sea_cell >= 0, "the map has both land and deep water")
+	var land_color := atlas.color_of(MapAtlas.VIEW_BIOMES, land_cell)
+	var sea_color := atlas.color_of(MapAtlas.VIEW_BIOMES, sea_cell)
+	check(land_color != sea_color, "the biome layer separates land and water")
+	check(land_color.a > 0.9 and sea_color.a > 0.9, "the map pixels are opaque")
+
+	atlas.bake_layer(MapAtlas.VIEW_STATES)
+	var state_color := atlas.color_of(MapAtlas.VIEW_STATES, state_cell)
+	var biome_color := atlas.color_of(MapAtlas.VIEW_BIOMES, state_cell)
+	check(state_color != biome_color, "the political layer tints cells of a state")
+
+	for layer in MapAtlas.LAYERS:
+		atlas.bake_layer(layer)
+	check(atlas.layer_count_baked() == MapAtlas.LAYERS, "all %d layers are baked" % MapAtlas.LAYERS)
+
+	var again := MapAtlas.new()
+	again.level = 1.0
+	again.setup(map)
+	again.bake(MapAtlas.VIEW_BIOMES)
+	var first_image := atlas.layer_image(MapAtlas.VIEW_BIOMES)
+	var second_image := again.layer_image(MapAtlas.VIEW_BIOMES)
+	check(first_image != null and second_image != null, "a layer can be read back as an image")
+	check(first_image.get_data() == second_image.get_data(), "the atlas is deterministic")
+
+	var path := "user://atlas_check.png"
+	check(atlas.save_png(MapAtlas.VIEW_BIOMES, path), "a layer is saved as a PNG")
+	check(FileAccess.file_exists(path), "the PNG file is on disk")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+## The renderer drives the atlas and keeps the sharp details as vectors.
+func _check_renderer(map: MapData) -> void:
+	print("renderer:")
+	var renderer := MapRenderer.new()
+	renderer.set_level(1.0)
+	renderer.setup(map)
+	check(not renderer.is_ready(), "nothing is drawn before the atlas is baked")
+
+	var slices := 0
+	while renderer.bake_geometry_step():
+		slices += 1
+		if slices > 4000:
+			break
+	check(slices > 1, "the geometry is baked in slices (%d)" % slices)
+	check(renderer.bake_progress() > 0.999, "the bake reports its progress")
+
+	renderer.bake(MapAtlas.VIEW_BIOMES)
+	check(renderer.is_ready(), "the renderer draws the baked layer")
+	check(renderer.atlas.cell_at(Vector2(-32.0, -32.0)) == -1, "hovering off the map reports no cell")
+	check(renderer.view_title(MapAtlas.VIEW_HEIGHTS) == "Высоты", "layers are named for the interface")
+	renderer.free()
