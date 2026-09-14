@@ -21,9 +21,9 @@ static func connect_vertices(vertices_c: Array, vertices_v: Array, starting_vert
 		chain.append(current)
 
 		var neighbours: PackedInt32Array = vertices_c[current]
-		var c1 := of_same_type.call(neighbours[0]) if neighbours.size() > 0 else false
-		var c2 := of_same_type.call(neighbours[1]) if neighbours.size() > 1 else false
-		var c3 := of_same_type.call(neighbours[2]) if neighbours.size() > 2 else false
+		var c1: bool = bool(of_same_type.call(neighbours[0])) if neighbours.size() > 0 else false
+		var c2: bool = bool(of_same_type.call(neighbours[1])) if neighbours.size() > 1 else false
+		var c3: bool = bool(of_same_type.call(neighbours[2])) if neighbours.size() > 2 else false
 		var v: PackedInt32Array = vertices_v[current]
 		var v1 := v[0] if v.size() > 0 else -1
 		var v2 := v[1] if v.size() > 1 else -1
